@@ -1,131 +1,131 @@
-import { createFileRoute } from "@tanstack/react-router";
-import dashboardImg from "@/assets/dashboard.jpg";
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { Nav } from "@/components/Nav";
+import { useAuth } from "@/hooks/use-auth";
+import heroImage from "@/assets/hero.jpg";
 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Vectr — Operate at the speed of thought" },
-      { name: "description", content: "The precision interface for high-output engineering teams." },
-      { property: "og:title", content: "Vectr — Operate at the speed of thought" },
-      { property: "og:description", content: "The precision interface for high-output engineering teams." },
+      { title: "MyStyle — Your personal AI stylist" },
+      { name: "description", content: "Upload a selfie, share an occasion, and get tailored outfits, sizing guidance, and AI-generated try-ons." },
+      { property: "og:title", content: "MyStyle — Your personal AI stylist" },
+      { property: "og:description", content: "Upload a selfie, share an occasion, and get tailored outfits, sizing guidance, and AI-generated try-ons." },
+      { property: "og:image", content: heroImage },
+      { name: "twitter:image", content: heroImage },
     ],
   }),
-  component: Index,
+  component: Landing,
 });
 
-function Index() {
+function Landing() {
+  const { user } = useAuth();
   return (
-    <div className="min-h-screen bg-background text-foreground font-display selection:bg-primary/20">
-      {/* Nav */}
-      <nav className="sticky top-0 z-50 bg-background/80 backdrop-blur-md border-b border-border">
-        <div className="flex items-center justify-between px-6 h-16 max-w-6xl mx-auto">
-          <span className="font-mono font-medium tracking-tighter text-lg">VECTR.</span>
-          <div className="size-10 grid place-items-center">
-            <div>
-              <div className="w-5 h-0.5 bg-foreground mb-1" />
-              <div className="w-5 h-0.5 bg-foreground" />
+    <div className="min-h-screen flex flex-col">
+      <Nav authed={!!user} />
+
+      {/* Hero */}
+      <section className="relative overflow-hidden">
+        <div className="mx-auto max-w-7xl px-6 grid grid-cols-1 lg:grid-cols-2 gap-12 items-center py-16 lg:py-28">
+          <div>
+            <p className="eyebrow uppercase tracking-[0.2em]">YOUR AI FASHION STYLER</p>
+            <h1 className="mt-6 text-5xl md:text-7xl leading-[0.95]">
+              Dress with<br />
+              <em className="text-accent">intention.</em>
+            </h1>
+            <p className="mt-8 text-lg text-muted-foreground max-w-md leading-relaxed">
+              MyStyle studies your features, your measurements, and the moment —
+              then composes outfits that feel unmistakably yours.
+            </p>
+            <div className="mt-10 flex flex-wrap items-center gap-4">
+              <Link
+                to={user ? "/discover" : "/auth"}
+                className="bg-foreground text-background px-8 py-4 text-sm tracking-wider uppercase hover:bg-accent hover:text-accent-foreground transition-colors"
+              >
+                {user ? "Open the atelier" : "Begin your fitting"}
+              </Link>
+              <a href="#how" className="text-sm border-b border-foreground pb-1 hover:text-accent hover:border-accent transition-colors">
+                How it works
+              </a>
+            </div>
+          </div>
+          <div className="relative">
+            <img
+              src={heroImage}
+              alt="A woman in a tan trench coat against a cream backdrop"
+              width={1080}
+              height={1920}
+              className="w-full aspect-[3/4] object-cover"
+            />
+            <div className="absolute -bottom-6 -left-6 bg-background border border-border p-6 max-w-xs hidden md:block">
+              <p className="eyebrow">The thesis</p>
+              <p className="mt-2 font-serif text-lg leading-snug italic">
+                "Personal style isn't bought — it's understood."
+              </p>
             </div>
           </div>
         </div>
-      </nav>
+      </section>
 
-      {/* Hero */}
-      <section className="px-6 pt-12 pb-16 overflow-hidden max-w-6xl mx-auto">
-        <header className="max-w-prose">
-          <div className="inline-block px-2 py-1 mb-6 bg-primary/5 border border-primary/10 rounded-[2px]">
-            <span className="font-mono text-[10px] uppercase tracking-widest text-primary font-medium">
-              v2.0 Release
-            </span>
+      {/* How */}
+      <section id="how" className="border-t border-border">
+        <div className="mx-auto max-w-7xl px-6 py-24">
+          <p className="eyebrow text-center">The Process</p>
+          <h2 className="mt-4 text-4xl md:text-5xl text-center max-w-2xl mx-auto">
+            Four considered steps to a wardrobe that fits.
+          </h2>
+          <div className="mt-20 grid grid-cols-1 md:grid-cols-4 gap-12">
+            {[
+              { n: "01", t: "Your measurements", d: "Share height, weight and a few preferences. We translate them into accurate size recommendations." },
+              { n: "02", t: "A selfie, optional", d: "Upload a photo so the AI can read your undertone, hair and proportions." },
+              { n: "03", t: "Name the occasion", d: "A first date, a board meeting, a weekend abroad — context shapes the brief." },
+              { n: "04", t: "See it on you", d: "Three outfits, styling notes, and an AI rendering of how each one wears." },
+            ].map((s) => (
+              <div key={s.n}>
+                <p className="font-serif text-3xl text-accent">{s.n}</p>
+                <div className="hairline my-4" />
+                <h3 className="text-xl font-serif">{s.t}</h3>
+                <p className="mt-3 text-sm text-muted-foreground leading-relaxed">{s.d}</p>
+              </div>
+            ))}
           </div>
-          <h1 className="text-5xl md:text-7xl font-extrabold tracking-tight leading-[0.9] text-balance mb-6 animate-slide-up">
-            OPERATE AT THE SPEED OF THOUGHT.
-          </h1>
-          <p className="text-lg text-muted leading-relaxed text-pretty mb-8 [animation-delay:150ms] animate-slide-up">
-            The precision interface for high-output teams. No bloat, just the essential tools for scaling engineering culture.
-          </p>
-          <div className="flex flex-col sm:flex-row gap-3 [animation-delay:300ms] animate-slide-up">
-            <button className="h-14 bg-foreground text-background font-bold px-8 rounded-[4px] active:scale-95 transition-transform">
-              Get Started Now
-            </button>
-            <button className="h-14 border border-border font-bold px-8 rounded-[4px] flex items-center justify-center gap-2">
-              Documentation
-              <span className="font-mono text-xs opacity-40">{"->"}</span>
-            </button>
-          </div>
-        </header>
-
-        <div className="mt-16 relative animate-reveal [animation-delay:450ms]">
-          <img
-            src={dashboardImg}
-            alt="Vectr product interface dashboard"
-            className="w-full aspect-[4/5] object-cover outline-1 -outline-offset-1 outline-black/5 rounded-[4px]"
-          />
         </div>
       </section>
 
       {/* Features */}
-      <section className="px-6 py-20 bg-foreground text-background">
-        <div className="space-y-12 max-w-3xl mx-auto">
+      <section id="features" className="border-t border-border bg-secondary/40">
+        <div className="mx-auto max-w-7xl px-6 py-24 grid grid-cols-1 md:grid-cols-3 gap-px bg-border">
           {[
-            { n: "01 — ARCHITECTURE", h: "Built for persistence", p: "Distributed state management that works even when the network doesn't. Native-first performance in a browser shell." },
-            { n: "02 — INTEGRATION", h: "Deep hooks by default", p: "Plug into your existing CI/CD pipelines with zero-config exporters for every major cloud provider." },
-            { n: "03 — SECURITY", h: "Encrypted at rest", p: "Enterprise-grade key rotation and audited access logs. We don't see your data, and neither does anyone else." },
+            { t: "Multimodal analysis", d: "Upload selfies, clothing, or inspiration. The AI reads color, fit, formality, and texture together." },
+            { t: "Size with confidence", d: "From your height and weight, get a tops, bottoms and a recommended band — never guess again." },
+            { t: "Virtual try-on", d: "See an editorial rendering of each outfit on you before you spend a cent." },
           ].map((f) => (
-            <div key={f.n} className="border-t border-background/10 pt-8">
-              <span className="font-mono text-xs text-background/40 block mb-4">{f.n}</span>
-              <h3 className="text-2xl font-bold mb-3">{f.h}</h3>
-              <p className="text-background/60 leading-relaxed">{f.p}</p>
+            <div key={f.t} className="bg-background p-10">
+              <h3 className="text-2xl font-serif">{f.t}</h3>
+              <p className="mt-4 text-sm text-muted-foreground leading-relaxed">{f.d}</p>
             </div>
           ))}
         </div>
       </section>
 
       {/* CTA */}
-      <section className="px-6 py-24 max-w-3xl mx-auto">
-        <div className="bg-primary p-8 rounded-[4px] text-primary-foreground">
-          <h2 className="text-3xl font-extrabold tracking-tight mb-4">READY TO SHIP?</h2>
-          <p className="mb-8 text-primary-foreground/80">
-            Join 2,000+ teams building the future on Vectr. Free 14-day trial starts instantly.
-          </p>
-          <button className="w-full h-14 bg-background text-primary font-bold rounded-[4px] shadow-xl">
-            Create Account
-          </button>
-          <p className="mt-4 text-center font-mono text-[10px] uppercase tracking-tighter text-primary-foreground/60">
-            No credit card required
-          </p>
+      <section className="border-t border-border">
+        <div className="mx-auto max-w-3xl px-6 py-28 text-center">
+          <h2 className="text-5xl md:text-6xl font-serif">
+            The next outfit<br />you wear with <em className="text-accent">conviction.</em>
+          </h2>
+          <Link
+            to={user ? "/discover" : "/auth"}
+            className="mt-10 inline-block bg-foreground text-background px-10 py-4 text-sm tracking-widest uppercase hover:bg-accent hover:text-accent-foreground transition-colors"
+          >
+            {user ? "Start styling" : "Create your account"}
+          </Link>
         </div>
       </section>
 
-      {/* Footer */}
-      <footer className="px-6 py-12 border-t border-border bg-card">
-        <div className="flex flex-col gap-10 max-w-6xl mx-auto">
-          <div className="space-y-4">
-            <span className="font-mono font-medium tracking-tighter text-lg">VECTR.</span>
-            <p className="text-sm text-muted max-w-sm">
-              Precision tooling for the next generation of digital infrastructure.
-            </p>
-          </div>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-8 font-mono text-[11px] uppercase tracking-widest">
-            <div className="flex flex-col gap-3">
-              <span className="text-foreground font-bold">Product</span>
-              <a href="#" className="text-muted">Changelog</a>
-              <a href="#" className="text-muted">Pricing</a>
-              <a href="#" className="text-muted">Security</a>
-            </div>
-            <div className="flex flex-col gap-3">
-              <span className="text-foreground font-bold">Legal</span>
-              <a href="#" className="text-muted">Privacy</a>
-              <a href="#" className="text-muted">Terms</a>
-              <a href="#" className="text-muted">Contact</a>
-            </div>
-          </div>
-          <div className="pt-8 border-t border-border flex justify-between items-center">
-            <span className="font-mono text-[10px] text-muted uppercase">© 2024 Vectr Labs</span>
-            <div className="flex items-center gap-2">
-              <div className="size-2 bg-primary rounded-full" />
-              <span className="font-mono text-[10px] text-muted uppercase">Systems Nominal</span>
-            </div>
-          </div>
+      <footer className="border-t border-border">
+        <div className="mx-auto max-w-7xl px-6 py-10 flex flex-wrap justify-between items-center gap-4">
+          <p className="font-serif text-lg">My<span className="italic text-accent">Style</span></p>
+          <p className="text-xs text-muted-foreground">© {new Date().getFullYear()} MyStyle. An editorial study in fit.</p>
         </div>
       </footer>
     </div>

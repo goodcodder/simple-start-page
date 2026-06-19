@@ -1,0 +1,479 @@
+import { createServerFn } from "@tanstack/react-start";
+import { z } from "zod";
+import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+
+const REKA_API = "https://api.reka.ai/v1";
+const TEXT_MODEL = "reka-flash";
+const LOVABLE_AI_API = "https://ai.gateway.lovable.dev/v1";
+const GEMINI_IMAGE_MODEL = "google/gemini-2.5-flash-image";
+
+function getRekaApiKey() {
+  const key = process.env.REKA_API_KEY;
+  if (!key) throw new Error("Missing REKA_API_KEY");
+  return key;
+}
+
+function getLovableApiKey() {
+  const key = process.env.LOVABLE_API_KEY;
+  if (!key) throw new Error("Missing LOVABLE_API_KEY");
+  return key;
+}
+
+async function callRekaChat(path: string, body: unknown) {
+  const res = await fetch(`${REKA_API}${path}`, {
+    method: "POST",
+    headers: {
+      "X-Api-Key": getRekaApiKey(),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    if (res.status === 429) throw new Error("Rate limit reached. Please wait a moment and try again.");
+    if (res.status === 401) throw new Error("Invalid Reka API key. Check that REKA_API_KEY is set correctly.");
+    throw new Error(`Reka API error ${res.status}: ${text.slice(0, 200)}`);
+  }
+
+  return res.json();
+}
+
+async function fetchImageAsDataUrl(url: string) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Could not fetch reference image (${res.status})`);
+  const mime = res.headers.get("content-type") || "image/jpeg";
+  const buf = Buffer.from(await res.arrayBuffer());
+  return `data:${mime};base64,${buf.toString("base64")}`;
+}
+
+async function generateGeminiImage(prompt: string, referenceUrls: string[]) {
+  const key = getLovableApiKey();
+  const refDataUrls = await Promise.all(referenceUrls.map(fetchImageAsDataUrl));
+  const userContent: Array<Record<string, unknown>> = [{ type: "text", text: prompt }];
+  for (const url of refDataUrls) {
+    userContent.push({ type: "image_url", image_url: { url } });
+  }
+  const body = JSON.stringify({
+    model: GEMINI_IMAGE_MODEL,
+    messages: [{ role: "user", content: userContent }],
+    modalities: ["image", "text"],
+  });
+
+  const maxAttempts = 4;
+  let lastErr = "";
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const res = await fetch(`${LOVABLE_AI_API}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      body,
+    });
+    if (res.ok) {
+      const payload = await res.json();
+      const msg = payload?.choices?.[0]?.message;
+      const imgUrl: string | undefined = msg?.images?.[0]?.image_url?.url;
+      if (!imgUrl) throw new Error("No image returned by Gemini");
+      const match = imgUrl.match(/^data:([^;]+);base64,(.+)$/);
+      if (!match) throw new Error("Unexpected image format from Gemini");
+      const mime = match[1];
+      return { bytes: Buffer.from(match[2], "base64"), mime, ext: mime.split("/")[1] || "png" };
+    }
+    lastErr = await res.text();
+    if (res.status === 401 || res.status === 403) throw new Error("AI gateway auth failed.");
+    if (res.status === 402) throw new Error("Lovable AI credits exhausted. Please add credits in Settings.");
+    if (res.status !== 429 && res.status < 500) {
+      throw new Error(`Gemini error ${res.status}: ${lastErr.slice(0, 300)}`);
+    }
+    if (attempt < maxAttempts - 1) {
+      const waitMs = [2000, 5000, 12000][attempt] ?? 15000;
+      await new Promise((r) => setTimeout(r, waitMs));
+    }
+  }
+  throw new Error(
+    "Image generation is temporarily rate-limited. Please wait ~1 minute and try again.",
+  );
+}
+
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : "Something went wrong";
+}
+
+function isRecoverableGeminiError(message: string) {
+  return /gemini|rate.?limit|429|api key/i.test(message);
+}
+
+function asNonEmptyString(value: unknown, fallback = "") {
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+type OutfitItem = { category: string; description: string; color: string; search_query: string };
+type Outfit = {
+  name: string;
+  summary: string;
+  items: OutfitItem[];
+  why_it_works: string;
+  styling_tips: string[];
+};
+
+function normalizeOutfitItem(item: unknown): OutfitItem | null {
+  if (!item || typeof item !== "object") return null;
+  const value = item as Record<string, unknown>;
+  const description = asNonEmptyString(value.description);
+  const searchQuery = asNonEmptyString(value.search_query, description);
+  if (!description && !searchQuery) return null;
+  return {
+    category: asNonEmptyString(value.category, "Item"),
+    description,
+    color: asNonEmptyString(value.color, "Unknown"),
+    search_query: searchQuery,
+  };
+}
+
+function normalizeOutfit(outfit: unknown): Outfit | null {
+  if (!outfit || typeof outfit !== "object") return null;
+  const value = outfit as Record<string, unknown>;
+  const items = Array.isArray(value.items)
+    ? value.items.map(normalizeOutfitItem).filter((entry): entry is OutfitItem => Boolean(entry))
+    : [];
+  const stylingTips = Array.isArray(value.styling_tips)
+    ? value.styling_tips.map((tip) => asNonEmptyString(tip)).filter(Boolean)
+    : [];
+
+  return {
+    name: asNonEmptyString(value.name, "Styled look"),
+    summary: asNonEmptyString(value.summary, "A balanced outfit recommendation."),
+    items,
+    why_it_works: asNonEmptyString(value.why_it_works, "This combination keeps the proportions balanced and practical."),
+    styling_tips: stylingTips,
+  };
+}
+
+function normalizeOutfitResponse(content: string): { outfits: Outfit[] } {
+  const candidates: unknown[] = [];
+
+  try {
+    candidates.push(JSON.parse(content));
+  } catch {
+    const match = content.match(/\{[\s\S]*\}/);
+    if (match) {
+      try {
+        candidates.push(JSON.parse(match[0]));
+      } catch {
+        // ignore and fall through to empty result
+      }
+    }
+  }
+
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const value = candidate as { outfits?: unknown };
+    const outfits = Array.isArray(value.outfits)
+      ? value.outfits.map(normalizeOutfit).filter((entry): entry is Outfit => Boolean(entry))
+      : [];
+    return { outfits };
+  }
+
+  return { outfits: [] };
+}
+
+
+export const getSignedUploadUrl = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) => z.object({ bucket: z.string(), path: z.string() }).parse(d))
+  .handler(async ({ data, context }) => {
+    const { data: signed, error } = await context.supabase.storage
+      .from(data.bucket)
+      .createSignedUrl(data.path, 60 * 60);
+    if (error || !signed) throw new Error(error?.message ?? "Could not sign URL");
+    return { url: signed.signedUrl };
+  });
+
+export const analyzeUpload = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) =>
+    z.object({
+      uploadId: z.string().uuid(),
+    }).parse(d),
+  )
+  .handler(async ({ data, context }) => {
+    const { data: row, error } = await context.supabase
+      .from("uploads")
+      .select("id,kind,storage_path")
+      .eq("id", data.uploadId)
+      .eq("user_id", context.userId)
+      .single();
+    if (error || !row) throw new Error("Upload not found");
+
+    const { data: signed } = await context.supabase.storage
+      .from("user-uploads")
+      .createSignedUrl(row.storage_path, 60 * 10);
+    if (!signed) throw new Error("Could not sign image");
+
+    const sgContext =
+      " Tailor all suggestions to Singapore's tropical climate (hot 27-33C, humid, frequent rain, strong sun, cold aircon indoors): prioritise lightweight breathable fabrics (linen, cotton, tencel, modal), and mention a packable aircon layer or sun/rain consideration where useful.";
+    const system =
+      row.kind === "selfie"
+        ? "You are a fashion stylist. Analyze the person's appearance: skin undertone (warm/cool/neutral), hair, eye color, body shape, and the colors and styles that would flatter them. Be concise and respectful." + sgContext
+        : row.kind === "clothing"
+          ? "You are a fashion stylist. Analyze this clothing item: type, color(s), material guess, formality, breathability for hot/humid weather, and 3 Singapore-appropriate outfit pairings it would work with." + sgContext
+          : "You are a fashion stylist. Analyze this inspiration photo: aesthetic, dominant colors, key pieces, and how to recreate the look for Singapore weather at varying price points." + sgContext;
+
+    const result = await callRekaChat("/chat/completions", {
+      model: TEXT_MODEL,
+      messages: [
+        { role: "system", content: system },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Please analyze this image. Return clear markdown with short headings." },
+            { type: "image_url", image_url: { url: signed.signedUrl } },
+          ],
+        },
+      ],
+    });
+
+    const text: string = result?.choices?.[0]?.message?.content ?? "";
+    await context.supabase.from("uploads").update({ analysis: { text, model: TEXT_MODEL } }).eq("id", row.id);
+    return { analysis: text };
+  });
+
+export const recommendOutfits = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) =>
+    z.object({
+      occasion: z.string().min(2).max(120),
+      category: z.string().max(60).optional(),
+      notes: z.string().max(500).optional(),
+      selfieUploadId: z.string().uuid().optional(),
+    }).parse(d),
+  )
+  .handler(async ({ data, context }) => {
+    const { data: profile } = await context.supabase
+      .from("profiles")
+      .select("full_name, gender, height_cm, weight_kg, top_size, bottom_size, style_preferences")
+      .eq("user_id", context.userId)
+      .maybeSingle();
+
+    let selfieUrl: string | null = null;
+    if (data.selfieUploadId) {
+      const { data: up } = await context.supabase
+        .from("uploads")
+        .select("storage_path")
+        .eq("id", data.selfieUploadId)
+        .eq("user_id", context.userId)
+        .single();
+      if (!up) throw new Error("Selfie not found");
+      const { data: signed, error: signError } = await context.supabase.storage
+        .from("user-uploads")
+        .createSignedUrl(up.storage_path, 60 * 10);
+      if (signError || !signed) throw new Error(signError?.message ?? "Could not sign selfie");
+      selfieUrl = signed.signedUrl;
+    }
+
+    const messages: Array<Record<string, unknown>> = [
+      {
+        role: "system",
+        content:
+          "You are MyStyle, a personal fashion stylist based in Singapore. Recommend 3 distinct outfits tailored to the user's occasion, body, and preferences. " +
+          "IMPORTANT CLIMATE CONTEXT: The user is in Singapore - hot (27-33C), humid (70-90%), with frequent rain and strong sun. Indoor venues (malls, offices, MRT) are heavily air-conditioned and cold. " +
+          "Default to lightweight, breathable, sweat-friendly fabrics (linen, cotton, tencel, modal, performance knits). Avoid wool, heavy denim, leather, thick layers, and anything that traps heat. " +
+          "Always include at least one practical Singapore touch where relevant: a packable light layer for aircon, breathable footwear, sun/rain consideration, or moisture-wicking fabric. " +
+          "Reference Singapore-accessible retailers in search_query when sensible (Uniqlo, Zara, Cotton On, Love Bonito, Charles & Keith, Pedro, Lazada, Shopee, Zalora). " +
+          "Always respond with VALID JSON only - no prose, no markdown fences - matching this schema:\n" +
+          `{"outfits":[{"name":string,"summary":string,"items":[{"category":string,"description":string,"color":string,"search_query":string}],"why_it_works":string,"styling_tips":[string]}]}\n` +
+          "search_query should be a short phrase a user can paste into Google Shopping, Zalora, or Lazada to find that piece.",
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text:
+              `Occasion: ${data.occasion}\n` +
+              (data.category ? `Category preference: ${data.category}\n` : "") +
+              (data.notes ? `Additional notes: ${data.notes}\n` : "") +
+              `\nProfile: ${JSON.stringify(profile ?? {})}\n` +
+              (selfieUrl ? "A selfie of the user is attached - use their visible coloring." : ""),
+          },
+          ...(selfieUrl ? [{ type: "image_url", image_url: { url: selfieUrl } }] : []),
+        ],
+      },
+    ];
+
+    const result = await callRekaChat("/chat/completions", {
+      model: TEXT_MODEL,
+      messages,
+    });
+
+    const content: string = result?.choices?.[0]?.message?.content ?? "{}";
+    const parsed = normalizeOutfitResponse(content);
+
+    const { data: saved, error } = await context.supabase
+      .from("recommendations")
+      .insert({
+        user_id: context.userId,
+        occasion: data.occasion,
+        category: data.category ?? null,
+        prompt: data.notes ?? null,
+        outfits: JSON.parse(JSON.stringify(parsed)),
+        selfie_upload_id: data.selfieUploadId ?? null,
+      })
+      .select("id")
+      .single();
+    if (error) throw new Error(error.message);
+    return { id: saved.id, outfits: parsed.outfits };
+  });
+
+export const generateTryOn = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) =>
+    z.object({
+      recommendationId: z.string().uuid(),
+      outfitIndex: z.number().int().min(0).max(10),
+    }).parse(d),
+  )
+  .handler(async ({ data, context }) => {
+    const { data: rec, error } = await context.supabase
+      .from("recommendations")
+      .select("id, outfits, occasion, selfie_upload_id")
+      .eq("id", data.recommendationId)
+      .eq("user_id", context.userId)
+      .single();
+    if (error || !rec) throw new Error("Recommendation not found");
+
+    const storedOutfits = rec.outfits as { outfits?: unknown } | null;
+    const outfits = Array.isArray(storedOutfits?.outfits) ? storedOutfits.outfits : [];
+    const outfit = outfits[data.outfitIndex] as
+      | { name?: string; summary?: string; items?: Array<{ description?: string; color?: string }> }
+      | undefined;
+    if (!outfit) throw new Error("Outfit not found");
+
+    const itemsText =
+      outfit.items?.map((i) => `${i.color ?? ""} ${i.description ?? ""}`.trim()).join(", ") ?? "";
+
+    let selfieUrl: string | null = null;
+    if (rec.selfie_upload_id) {
+      const { data: up } = await context.supabase
+        .from("uploads")
+        .select("storage_path")
+        .eq("id", rec.selfie_upload_id)
+        .eq("user_id", context.userId)
+        .single();
+      if (!up) throw new Error("Selfie not found");
+      const { data: signed, error: signError } = await context.supabase.storage
+        .from("user-uploads")
+        .createSignedUrl(up.storage_path, 60 * 10);
+      if (signError || !signed) throw new Error(signError?.message ?? "Could not sign image");
+      selfieUrl = signed.signedUrl;
+    }
+
+    const prompt =
+      `Editorial full-body fashion photograph, soft natural light, neutral studio backdrop. ` +
+      `A model wearing this outfit: ${outfit.name ?? ""}. ${outfit.summary ?? ""}. ` +
+      `Pieces: ${itemsText}. Occasion: ${rec.occasion}. ` +
+      (selfieUrl
+        ? "Use the attached person's face, hair, skin tone, and body shape faithfully."
+        : "Anonymous model with relaxed pose, suitable for Singapore tropical climate.");
+
+    let generated: Awaited<ReturnType<typeof generateGeminiImage>>;
+    try {
+      generated = await generateGeminiImage(prompt, selfieUrl ? [selfieUrl] : []);
+    } catch (error) {
+      const message = getErrorMessage(error);
+      if (isRecoverableGeminiError(message)) {
+        return { ok: false as const, error: message, retryAfterSeconds: 60 };
+      }
+      throw error;
+    }
+    const { bytes, mime, ext } = generated;
+    const path = `${context.userId}/${rec.id}-${data.outfitIndex}-${Date.now()}.${ext}`;
+
+    const { error: upErr } = await context.supabase.storage
+      .from("tryons")
+      .upload(path, bytes, { contentType: mime, upsert: false });
+    if (upErr) throw new Error(upErr.message);
+
+    await context.supabase
+      .from("recommendations")
+      .update({ tryon_image_path: path })
+      .eq("id", rec.id);
+
+    const { data: signed } = await context.supabase.storage
+      .from("tryons")
+      .createSignedUrl(path, 60 * 60);
+    return { ok: true as const, url: signed?.signedUrl ?? "", path };
+  });
+
+export const customTryOn = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d: unknown) =>
+    z.object({
+      selfieUploadId: z.string().uuid(),
+      clothingUploadIds: z.array(z.string().uuid()).min(1).max(5),
+      notes: z.string().max(400).optional(),
+    }).parse(d),
+  )
+  .handler(async ({ data, context }) => {
+    const ids = [data.selfieUploadId, ...data.clothingUploadIds];
+    const { data: rows, error } = await context.supabase
+      .from("uploads")
+      .select("id, kind, storage_path, user_id")
+      .in("id", ids);
+    if (error || !rows) throw new Error("Uploads not found");
+    if (rows.length !== ids.length) throw new Error("One or more uploads were not found");
+
+    const selfie = rows.find((r) => r.id === data.selfieUploadId);
+    if (!selfie) throw new Error("Selfie not found");
+    if (selfie.user_id !== context.userId || selfie.kind !== "selfie") {
+      throw new Error("Selected selfie is invalid");
+    }
+    const clothes = data.clothingUploadIds
+      .map((id) => rows.find((r) => r.id === id))
+      .filter((r): r is NonNullable<typeof r> => Boolean(r));
+    if (clothes.length === 0) throw new Error("No clothing items found");
+    if (clothes.some((item) => item.user_id !== context.userId || item.kind !== "clothing")) {
+      throw new Error("One or more clothing items are invalid");
+    }
+
+    async function sign(path: string) {
+      const { data: s } = await context.supabase.storage
+        .from("user-uploads")
+        .createSignedUrl(path, 60 * 10);
+      if (!s) throw new Error("Could not sign image");
+      return s.signedUrl;
+    }
+
+    const selfieUrl = await sign(selfie.storage_path);
+    const clothingUrls = await Promise.all(clothes.map((c) => sign(c.storage_path)));
+
+    const prompt =
+      `Editorial full-body virtual try-on photograph. Soft natural light, neutral studio backdrop. ` +
+      `Dress the PERSON from the first reference image in the CLOTHING shown in the following ${clothingUrls.length} reference image(s). ` +
+      `Preserve the person's face, hair, skin tone, and body shape faithfully. Render each garment realistically — fit, drape, color, and texture should match the references. ` +
+      (data.notes ? `Notes: ${data.notes}. ` : "") +
+      `Suitable for Singapore tropical climate.`;
+
+    let generated: Awaited<ReturnType<typeof generateGeminiImage>>;
+    try {
+      generated = await generateGeminiImage(prompt, [selfieUrl, ...clothingUrls]);
+    } catch (error) {
+      const message = getErrorMessage(error);
+      if (isRecoverableGeminiError(message)) {
+        return { ok: false as const, error: message, retryAfterSeconds: 60 };
+      }
+      throw error;
+    }
+
+    const { bytes, mime, ext } = generated;
+    const path = `${context.userId}/custom-${Date.now()}.${ext}`;
+    const { error: upErr } = await context.supabase.storage
+      .from("tryons")
+      .upload(path, bytes, { contentType: mime, upsert: false });
+    if (upErr) throw new Error(upErr.message);
+
+    const { data: signed } = await context.supabase.storage
+      .from("tryons")
+      .createSignedUrl(path, 60 * 60);
+    return { ok: true as const, url: signed?.signedUrl ?? "", path };
+  });
+
